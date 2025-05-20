@@ -2,7 +2,6 @@ package utils
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 
@@ -10,10 +9,18 @@ import (
 )
 
 func ExtractTextAndLink(s *goquery.Selection) (string, string) {
-	link, exists := s.Find("a").Attr("href")
-	if !exists {
-		log.Print("Unable to find link.")
-		link = ""
+	// Find link - check multiple locations
+	var link string
+	if href, exists := s.Find("a").Attr("href"); exists {
+		link = href
+	} else if href, exists := s.Attr("href"); exists {
+		link = href
+	} else {
+		if href, exists := s.Parent().Find("a").Attr("href"); exists {
+			link = href
+		} else if href, exists := s.Next().Find("a").Attr("href"); exists {
+			link = href
+		}
 	}
 
 	var text string
@@ -41,8 +48,7 @@ func CleanHeadline(headline string) string {
 	headline = strings.ReplaceAll(headline, "\\", "")
 	headline = strings.ReplaceAll(headline, "/", "")
 
-	headline = strings.TrimSpace(headline)
-	return headline
+	return strings.TrimSpace(headline)
 }
 
 func ExtractTextFromURL(url string, UserAgent string, client *http.Client) (string, error) {
@@ -89,15 +95,14 @@ func ExtractTextFromURL(url string, UserAgent string, client *http.Client) (stri
 	// Get first 100 words
 	fullText := textBuilder.String()
 	words := strings.Fields(fullText)
-	if len(words) > 100 {
-		words = words[:100]
+	if len(words) > 200 {
+		words = words[:200]
 	}
 
 	return strings.Join(words, " "), nil
 }
 
-
-//keywords based search
+// keywords based search
 func BuildKeywordsMap(keywords []string) map[string]bool {
 	kwMap := make(map[string]bool)
 	for _, kw := range keywords {

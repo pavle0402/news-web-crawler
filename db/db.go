@@ -8,19 +8,15 @@ import (
 
 	"crawler/config"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-var DbPool *pgxpool.Pool
-
-const (
-	maxConnections = 10
-	connTimeout    = 5 * time.Second
-)
+var MongoClient *mongo.Client
 
 func Connect(cfg *config.DBConfig) {
-	dsn := fmt.Sprintf(
-		"postgres://%s:%s@%s:%s/%s",
+	uri := fmt.Sprintf(
+		"mongodb://%s:%s@%s:%s/%s?maxPoolSize=20",
 		cfg.DBUser,
 		cfg.DBPassword,
 		cfg.DBHost,
@@ -28,20 +24,22 @@ func Connect(cfg *config.DBConfig) {
 		cfg.DBName,
 	)
 
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		log.Fatalf("Error parsing database URL: %v", err)
-	}
-
-	config.MaxConns = maxConnections
-	ctx, cancel := context.WithTimeout(context.Background(), connTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	DbPool, err = pgxpool.NewWithConfig(ctx, config)
+	clientOptions := options.Client().ApplyURI(uri)
 
+	client, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		log.Fatalf("Error pinging database conn: %v", err)
+		log.Fatalf("Error connecting to MongoDB: %v", err)
 	}
+
+	// Optional: Ping the DB to make sure it connected
+	if err := client.Ping(ctx, nil); err != nil {
+		log.Fatalf("Error pinging MongoDB: %v", err)
+	}
+
+	MongoClient = client
 
 	log.Println("Database connection established successfully.")
 }

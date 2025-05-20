@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
@@ -72,7 +73,7 @@ type NewsData struct {
 }
 
 // Helper function to process a single URL and its depth
-func processURL(url string, depth int32, client *http.Client, keywords []string) (map[string]interface{}, error) {
+func processURL(url string, depth int8, client *http.Client, keywords []string) (map[string]interface{}, error) {
 	// Check robots.txt first
 	allowed, err := utils.ScrapeAllowed(url, UserAgent)
 	if err != nil {
@@ -132,37 +133,85 @@ type headlineInfo struct {
 	textLink string
 }
 
-// collets all headlines and their links from the document
+// In collectHeadlines function (parallel DOM processing)
 func collectHeadlines(doc *goquery.Document) map[string]*headlineInfo {
 	headlinesMap := make(map[string]*headlineInfo)
+	resultChan := make(chan *headlineInfo, 100)
+	var wg sync.WaitGroup
 
 	doc.Find("*").Each(func(i int, s *goquery.Selection) {
-		tag := goquery.NodeName(s)
-		if strings.HasPrefix(tag, "h") && len(tag) == 2 {
-			headline := utils.CleanHeadline(strings.TrimSpace(s.Text()))
-			if headline != "" {
-				_, link := utils.ExtractTextAndLink(s)
+		wg.Add(1)
+		go func(s *goquery.Selection) {
+			defer wg.Done()
 
-				if _, exists := headlinesMap[headline]; !exists {
-					headlinesMap[headline] = &headlineInfo{
+			tag := goquery.NodeName(s)
+			if strings.HasPrefix(tag, "h") && len(tag) == 2 {
+				headline := utils.CleanHeadline(strings.TrimSpace(s.Text()))
+				if headline != "" {
+					_, link := utils.ExtractTextAndLink(s)
+					resultChan <- &headlineInfo{
 						headline: headline,
 						textLink: link,
 					}
 				}
 			}
-		}
+		}(s)
 	})
+
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	for info := range resultChan {
+		if _, exists := headlinesMap[info.headline]; !exists {
+			headlinesMap[info.headline] = info
+		}
+	}
 
 	return headlinesMap
 }
 
 // fetches and extracts content for each headline
 func processArticleContent(headlinesMap map[string]*headlineInfo, client *http.Client) {
-	for _, info := range headlinesMap {
-		if info.textLink != "" {
-			textContent, err := utils.ExtractTextFromURL(info.textLink, UserAgent, client)
-			if err == nil {
-				info.text = textContent
+	type result struct {
+		key   string
+		text  string
+		error error
+	}
+
+	resultChan := make(chan result, len(headlinesMap))
+	var wg sync.WaitGroup
+
+	maxWorkers := 5
+	workerChan := make(chan struct{}, maxWorkers)
+
+	for key, info := range headlinesMap {
+		if info.textLink == "" {
+			continue
+		}
+
+		wg.Add(1)
+		go func(k string, url string) {
+			defer wg.Done()
+			workerChan <- struct{}{}
+
+			text, err := utils.ExtractTextFromURL(url, UserAgent, client)
+
+			<-workerChan //release worker slot
+			resultChan <- result{key: k, text: text, error: err}
+		}(key, info.textLink)
+	}
+
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	for res := range resultChan {
+		if res.error == nil {
+			if info, exists := headlinesMap[res.key]; exists {
+				info.text = res.text
 			}
 		}
 	}
