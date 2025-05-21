@@ -1,12 +1,15 @@
 package handlers
 
 import (
+	"context"
+	"crawler/db"
 	"crawler/models"
 	"crawler/utils"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -52,16 +55,20 @@ func CrawlerHandler(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Successfully processed URL: %s", req.URL)
 	}
 
-	w.WriteHeader(http.StatusOK)
-	w.Header().Set("Content-Type", "application/json")
-	prettyJSON, err := json.MarshalIndent(results, "", "\t")
-	if err != nil {
-		log.Printf("Error marshalling JSON: %v", err)
-		http.Error(w, "Error generating response", http.StatusInternalServerError)
-		return
+	dbName, exists := os.LookupEnv("DB_NAME")
+	if !exists {
+		log.Fatal("Error processing db name")
 	}
 
-	w.Write(prettyJSON)
+	docs := utils.DataForInsert(results)
+	collection := db.MongoClient.Database(dbName).Collection("NewsData")
+
+	_, err = collection.InsertMany(context.TODO(), docs)
+	if err != nil {
+		fmt.Printf("Error occured during data insertion: %v", err)
+	}
+
+	log.Print("Crawler execution done.")
 }
 
 // NewsData represents a single news article with its headline and content
@@ -183,7 +190,7 @@ func processArticleContent(headlinesMap map[string]*headlineInfo, client *http.C
 	resultChan := make(chan result, len(headlinesMap))
 	var wg sync.WaitGroup
 
-	maxWorkers := 5
+	maxWorkers := 10
 	workerChan := make(chan struct{}, maxWorkers)
 
 	for key, info := range headlinesMap {
